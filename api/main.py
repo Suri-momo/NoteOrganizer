@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from notion_client import Client as NotionClient
+from playwright.async_api import async_playwright
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -54,18 +55,21 @@ class NotionSaveResponse(BaseModel):
     notion_url: str | None = None
 
 
-async def scrape_article(url: str) -> tuple[str, str]:
-    """Fetch and extract article content from a URL."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-    }
+def is_js_placeholder_content(content: str) -> bool:
+    """Check if content appears to be a JS loading placeholder."""
+    content_lower = content.lower()
+    # Check for common loading indicators
+    loading_indicators = ["loading...", "please wait", "javascript required"]
+    if any(indicator in content_lower for indicator in loading_indicators):
+        return True
+    # Check if content is suspiciously short (likely not loaded)
+    if len(content.strip()) < 200:
+        return True
+    return False
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "html.parser")
-
+def extract_content_from_soup(soup: BeautifulSoup) -> tuple[str, str]:
+    """Extract title and content from BeautifulSoup object."""
     # Remove script and style elements
     for element in soup(["script", "style", "nav", "footer", "header", "aside"]):
         element.decompose()
@@ -112,6 +116,42 @@ async def scrape_article(url: str) -> tuple[str, str]:
         content = content[:15000] + "..."
 
     return title.strip(), content
+
+
+async def scrape_with_playwright(url: str) -> str:
+    """Use Playwright to render JavaScript and get page content."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.goto(url, wait_until="networkidle", timeout=30000)
+        # Wait a bit more for dynamic content
+        await page.wait_for_timeout(2000)
+        content = await page.content()
+        await browser.close()
+        return content
+
+
+async def scrape_article(url: str) -> tuple[str, str]:
+    """Fetch and extract article content from a URL."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    }
+
+    # First try with httpx (faster)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        response = await client.get(url, headers=headers)
+        response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    title, content = extract_content_from_soup(soup)
+
+    # If content looks like a JS placeholder, use Playwright
+    if is_js_placeholder_content(content):
+        html = await scrape_with_playwright(url)
+        soup = BeautifulSoup(html, "html.parser")
+        title, content = extract_content_from_soup(soup)
+
+    return title, content
 
 
 def summarize_with_claude(title: str, content: str) -> tuple[str, list[str]]:
