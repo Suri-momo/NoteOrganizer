@@ -159,7 +159,7 @@ async def scrape_article(url: str) -> tuple[str, str]:
 def summarize_with_claude(title: str, content: str) -> tuple[str, str, list[str]]:
     """Use Claude to generate a summary, brief, and key takeaways."""
     prompt = f"""Please analyze the following article and provide:
-1. A one-sentence brief (max 100 characters)
+1. A brief (1-2 sentences) covering WHAT the article is about, WHEN it's relevant, and HOW it matters
 2. A concise summary (2-3 paragraphs)
 3. 3-5 key takeaways as bullet points
 
@@ -170,7 +170,7 @@ Article Content:
 
 Respond in the following format:
 BRIEF:
-[One sentence summary here]
+[1-2 sentences covering what, when, how]
 
 SUMMARY:
 [Your summary here]
@@ -197,7 +197,7 @@ KEY TAKEAWAYS:
     if "BRIEF:" in response_text and "SUMMARY:" in response_text and "KEY TAKEAWAYS:" in response_text:
         # Extract brief
         brief_part = response_text.split("SUMMARY:")[0].replace("BRIEF:", "").strip()
-        brief = brief_part[:150]  # Limit length
+        brief = brief_part[:300]  # Limit length for 1-2 sentences
 
         # Extract summary
         parts = response_text.split("KEY TAKEAWAYS:")
