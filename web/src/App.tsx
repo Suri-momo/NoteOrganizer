@@ -6,6 +6,7 @@ const API_URL = 'http://localhost:8000'
 interface Summary {
   title: string
   summary: string
+  brief: string
   key_takeaways: string[]
   source_url?: string
 }
@@ -74,6 +75,7 @@ function App() {
         body: JSON.stringify({
           title: result.title,
           summary: result.summary,
+          brief: result.brief,
           key_takeaways: result.key_takeaways,
           source_url: result.source_url || url || 'N/A',
         }),

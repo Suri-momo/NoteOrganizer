@@ -39,6 +39,7 @@ class NoteRequest(BaseModel):
 class SummaryResponse(BaseModel):
     title: str
     summary: str
+    brief: str
     key_takeaways: list[str]
     source_url: str | None = None
 
@@ -46,6 +47,7 @@ class SummaryResponse(BaseModel):
 class NotionSaveRequest(BaseModel):
     title: str
     summary: str
+    brief: str
     key_takeaways: list[str]
     source_url: str
 
@@ -154,11 +156,12 @@ async def scrape_article(url: str) -> tuple[str, str]:
     return title, content
 
 
-def summarize_with_claude(title: str, content: str) -> tuple[str, list[str]]:
-    """Use Claude to generate a summary and key takeaways."""
+def summarize_with_claude(title: str, content: str) -> tuple[str, str, list[str]]:
+    """Use Claude to generate a summary, brief, and key takeaways."""
     prompt = f"""Please analyze the following article and provide:
-1. A concise summary (2-3 paragraphs)
-2. 3-5 key takeaways as bullet points
+1. A one-sentence brief (max 100 characters)
+2. A concise summary (2-3 paragraphs)
+3. 3-5 key takeaways as bullet points
 
 Article Title: {title}
 
@@ -166,6 +169,9 @@ Article Content:
 {content}
 
 Respond in the following format:
+BRIEF:
+[One sentence summary here]
+
 SUMMARY:
 [Your summary here]
 
@@ -184,12 +190,18 @@ KEY TAKEAWAYS:
     response_text = message.content[0].text
 
     # Parse the response
+    brief = ""
     summary = ""
     takeaways = []
 
-    if "SUMMARY:" in response_text and "KEY TAKEAWAYS:" in response_text:
+    if "BRIEF:" in response_text and "SUMMARY:" in response_text and "KEY TAKEAWAYS:" in response_text:
+        # Extract brief
+        brief_part = response_text.split("SUMMARY:")[0].replace("BRIEF:", "").strip()
+        brief = brief_part[:150]  # Limit length
+
+        # Extract summary
         parts = response_text.split("KEY TAKEAWAYS:")
-        summary_part = parts[0].replace("SUMMARY:", "").strip()
+        summary_part = parts[0].split("SUMMARY:")[1].strip()
         takeaways_part = parts[1].strip()
 
         summary = summary_part
@@ -204,8 +216,9 @@ KEY TAKEAWAYS:
     else:
         # Fallback: use entire response as summary
         summary = response_text
+        brief = summary[:100] + "..." if len(summary) > 100 else summary
 
-    return summary, takeaways
+    return summary, brief, takeaways
 
 
 @app.get("/health")
@@ -222,11 +235,12 @@ async def summarize_link(request: LinkRequest):
         if not content:
             raise HTTPException(status_code=400, detail="Could not extract content from URL")
 
-        summary, takeaways = summarize_with_claude(title, content)
+        summary, brief, takeaways = summarize_with_claude(title, content)
 
         return SummaryResponse(
             title=title or "Untitled Article",
             summary=summary,
+            brief=brief,
             key_takeaways=takeaways,
             source_url=request.url
         )
@@ -240,11 +254,12 @@ async def summarize_link(request: LinkRequest):
 async def summarize_note(request: NoteRequest):
     """Generate a summary from note content."""
     try:
-        summary, takeaways = summarize_with_claude("Note", request.content)
+        summary, brief, takeaways = summarize_with_claude("Note", request.content)
 
         return SummaryResponse(
             title="Note Summary",
             summary=summary,
+            brief=brief,
             key_takeaways=takeaways
         )
     except Exception as e:
@@ -266,8 +281,31 @@ async def save_to_notion(request: NotionSaveRequest):
     try:
         notion = NotionClient(auth=notion_api_key)
 
-        # Build the key takeaways as bulleted list blocks
+        # Build properties for the Notion page
+        properties = {
+            "Title": {
+                "title": [{"text": {"content": request.title}}]
+            },
+            "Source": {
+                "url": request.source_url
+            },
+            "Date": {
+                "date": {"start": datetime.now().isoformat()[:10]}
+            },
+            "Summary": {
+                "rich_text": [{"text": {"content": request.brief[:2000]}}]
+            }
+        }
+
+        # Build the page content blocks
         children_blocks = [
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": f"Source: {request.source_url}"}}]
+                }
+            },
             {
                 "object": "block",
                 "type": "heading_2",
@@ -304,20 +342,7 @@ async def save_to_notion(request: NotionSaveRequest):
         # Create the page in Notion
         new_page = notion.pages.create(
             parent={"database_id": database_id},
-            properties={
-                "Title": {
-                    "title": [{"text": {"content": request.title}}]
-                },
-                "Summary": {
-                    "rich_text": [{"text": {"content": request.summary[:2000]}}]  # Notion limit
-                },
-                "Source URL": {
-                    "url": request.source_url
-                },
-                "Date": {
-                    "date": {"start": datetime.now().isoformat()[:10]}
-                }
-            },
+            properties=properties,
             children=children_blocks
         )
 
